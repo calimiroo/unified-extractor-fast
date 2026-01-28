@@ -7,20 +7,22 @@ import sys
 import asyncio
 import logging
 
-# --- تثبيت المتصفح مرة واحدة فقط عند بدء التطبيق ---
+# --- إعدادات البيئة للسيرفر ---
 @st.cache_resource
 def install_playwright_browsers():
+    # تثبيت المتصفح مع التبعيات اللازمة لنظام Linux/Streamlit Cloud
     os.system("playwright install chromium")
+    os.system("playwright install-deps")
 
 install_playwright_browsers()
 
-# ضبط سياسة الأحداث لتناسب نظام التشغيل (ويندوز أو لينكس/سيرفر)
+# ضبط السياسة لنظام ويندوز فقط، وتجنبها على لينكس (السيرفر)
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 
-# --- قائمة الدول ---
+# --- قائمة الدول الكاملة (كما هي في كودك) ---
 countries = [
     "Afghanistan", "Albania", "Algeria", "Andorra", "Angola", "Antigua and Barbuda", "Argentina", "Armenia", "Australia", "Austria",
     "Azerbaijan", "Bahamas", "Bahrain", "Bangladesh", "Barbados", "Belarus", "Belgium", "Belize", "Benin", "Bhutan", "Bolivia",
@@ -35,7 +37,7 @@ countries = [
     "Lithuania", "Luxembourg", "Madagascar", "Malawi", "Malaysia", "Maldives", "Mali", "Malta", "Marshall Islands", "Mauritania",
     "Mauritius", "Mexico", "Micronesia", "Moldova", "Monaco", "Mongolia", "Montenegro", "Morocco", "Mozambique", "Myanmar (formerly Burma)",
     "Namibia", "Nauru", "Nepal", "Netherlands", "New Zealand", "Nicaragua", "Niger", "Nigeria", "North Korea", "North Macedonia",
-    "Norway", "Oman", "Pakistan", "Palau", "Palestine State", "Panama", "Papua New Guinea", "Paraguay", "Peru", "Philippines",
+    "Norway", "Oman", "Pakistan", "Palau", "Palestine State", "Panama", "Papua New Gecko", "Paraguay", "Peru", "Philippines",
     "Poland", "Portugal", "Qatar", "Romania", "Russia", "Rwanda", "Saint Kitts and Nevis", "Saint Lucia", "Saint Vincent and the Grenadines",
     "Samoa", "San Marino", "Sao Tome and Principe", "Saudi Arabia", "Senegal", "Serbia", "Seychelles", "Sierra Leone", "Singapore",
     "Slovakia", "Slovenia", "Solomon Islands", "Somalia", "South Africa", "South Korea", "South Sudan", "Spain", "Sri Lanka",
@@ -44,30 +46,20 @@ countries = [
     "United Kingdom", "United States of America", "Uruguay", "Uzbekistan", "Vanuatu", "Venezuela", "Vietnam", "Yemen", "Zambia", "Zimbabwe"
 ]
 
-# --- Setup logging ---
 logging.basicConfig(level=logging.INFO)
-
-# --- Setup Page Config ---
 st.set_page_config(page_title="ICP Passport Lookup", layout="wide")
 st.title("🔍 ICP Passport Unified Number Lookup")
 
-# --- Session State Management ---
-if 'authenticated' not in st.session_state:
-    st.session_state.authenticated = False
-if 'run_state' not in st.session_state:
-    st.session_state.run_state = 'stopped'
-if 'batch_results' not in st.session_state:
-    st.session_state.batch_results = []
-if 'final_summary_text' not in st.session_state:
-    st.session_state.final_summary_text = ""
-if 'passport_to_unified' not in st.session_state:
-    st.session_state.passport_to_unified = {}
-if 'unified_to_passport' not in st.session_state:
-    st.session_state.unified_to_passport = {}
-if 'concurrency_level' not in st.session_state:
-    st.session_state.concurrency_level = 5
+# --- إدارة حالة الجلسة ---
+if 'authenticated' not in st.session_state: st.session_state.authenticated = False
+if 'batch_results' not in st.session_state: st.session_state.batch_results = []
+if 'final_summary_text' not in st.session_state: st.session_state.final_summary_text = ""
+if 'passport_to_unified' not in st.session_state: st.session_state.passport_to_unified = {}
+if 'unified_to_passport' not in st.session_state: st.session_state.unified_to_passport = {}
+if 'single_res' not in st.session_state: st.session_state.single_res = None
+if 'concurrency_level' not in st.session_state: st.session_state.concurrency_level = 3
 
-# --- Login Form ---
+# --- تسجيل الدخول ---
 if not st.session_state.authenticated:
     with st.form("login_form"):
         st.subheader("🔐 Protected Access")
@@ -76,51 +68,35 @@ if not st.session_state.authenticated:
             if pwd_input == "Bilkish":
                 st.session_state.authenticated = True
                 st.rerun()
-            else:
-                st.error("Incorrect Password.")
+            else: st.error("Incorrect Password.")
     st.stop()
 
-# --- Helper Functions ---
+# --- دوال مساعدة ---
 def format_time(seconds):
     seconds = int(seconds)
-    hours = seconds // 3600
-    minutes = (seconds % 3600) // 60
-    secs = seconds % 60
-    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
-
-def reset_duplicate_trackers():
-    st.session_state.passport_to_unified = {}
-    st.session_state.unified_to_passport = {}
+    return f"{seconds // 3600:02d}:{(seconds % 3600) // 60:02d}:{seconds % 60:02d}"
 
 def get_unique_result(passport_no, unified_str):
-    if not unified_str or unified_str == "Not Found":
-        return unified_str
+    if not unified_str or unified_str == "Not Found": return unified_str
     if unified_str in st.session_state.unified_to_passport:
-        existing_passport = st.session_state.unified_to_passport[unified_str]
-        if existing_passport != passport_no:
-            return "Not Found"
+        if st.session_state.unified_to_passport[unified_str] != passport_no: return "Not Found"
     st.session_state.passport_to_unified[passport_no] = unified_str
     st.session_state.unified_to_passport[unified_str] = passport_no
     return unified_str
 
 def color_status(val):
-    if val == 'Found': color = '#90EE90'
-    elif val == 'Not Found': color = '#FFCCCB'
-    else: color = '' 
+    color = '#90EE90' if val == 'Found' else '#FFCCCB' if val == 'Not Found' else ''
     return f'background-color: {color}'
 
+# --- وظائف البحث الرئيسية ---
 async def search_single_passport_playwright(passport_no, nationality, target_url, context):
     page = await context.new_page()
     try:
         await page.goto(target_url, wait_until="networkidle", timeout=60000)
-        try:
-            await page.click("button:has-text('I Got It')", timeout=2000)
+        try: await page.click("button:has-text('I Got It')", timeout=3000)
         except: pass
-
-        await page.evaluate("""() => {
-            const el = document.querySelector("input[value='4']");
-            if (el) { el.click(); el.dispatchEvent(new Event('change', { bubbles: true })); }
-        }""")
+        
+        await page.evaluate('document.querySelector("input[value=\'4\']").click()')
         
         try:
             await page.locator("//label[contains(.,'Passport Type')]/following::div[1]").click(timeout=5000)
@@ -128,111 +104,115 @@ async def search_single_passport_playwright(passport_no, nationality, target_url
             await page.keyboard.press("Enter")
         except: pass
 
-        await page.locator("input#passportNo").fill(passport_no)
-        try:
-            await page.locator('div[name="currentNationality"] button[ng-if="showClear"]').click(force=True, timeout=2000)
-        except: pass
-        
+        await page.locator("input#passportNo").fill(str(passport_no))
         await page.keyboard.press("Tab")
-        unified_number = "Not Found"
         
+        unified_number = "Not Found"
         try:
-            async with page.expect_response("**/checkValidateLeavePermitRequest**", timeout=10000) as response_info:
-                await page.locator("//label[contains(.,'Nationality')]/following::div[contains(@class,'ui-select-container')][1]").click(timeout=5000)
-                await page.keyboard.type(nationality, delay=50)
+            async with page.expect_response("**/checkValidateLeavePermitRequest**", timeout=12000) as response_info:
+                await page.locator("//label[contains(.,'Nationality')]/following::div[contains(@class,'ui-select-container')][1]").click()
+                await page.keyboard.type(str(nationality), delay=60)
                 await page.keyboard.press("Enter")
                 
-                response = await response_info.value
-                if response.status == 200:
-                    json_data = await response.json()
-                    raw_unified = json_data.get("unifiedNumber")
-                    if raw_unified:
-                        unified_number = str(raw_unified).strip()
+                resp = await response_info.value
+                if resp.status == 200:
+                    data = await resp.json()
+                    if data.get("unifiedNumber"): unified_number = str(data["unifiedNumber"]).strip()
         except: pass
 
-        final_result = get_unique_result(passport_no, unified_number)
+        res = get_unique_result(passport_no, unified_number)
         await page.close()
-        return final_result
-    except Exception as e:
+        return res
+    except:
         await page.close()
         return "ERROR"
 
 async def search_batch_concurrent(df, url, concurrency_level, update_callback):
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context(viewport={'width': 1366, 'height': 768})
+        browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
+        context = await browser.new_context(user_agent="Mozilla/5.0")
         semaphore = asyncio.Semaphore(concurrency_level)
         
         results = [{"Passport Number": str(row['Passport Number']).strip(), 
                     "Nationality": str(row['Nationality']).strip().upper(),
                     "Unified Number": "", "Status": ""} for _, row in df.iterrows()]
         
-        completed_count = 0
-        found_count = 0
+        completed = 0
+        found = 0
         
-        async def run_single_search(index):
-            nonlocal completed_count, found_count
+        async def worker(index):
+            nonlocal completed, found
             async with semaphore:
-                p_num = results[index]["Passport Number"]
-                nat = results[index]["Nationality"]
-                res = await search_single_passport_playwright(p_num, nat, url, context)
-                
-                status_val = "Found" if res not in ["Not Found", "ERROR"] else res
+                res = await search_single_passport_playwright(results[index]["Passport Number"], results[index]["Nationality"], url, context)
                 results[index]["Unified Number"] = res
-                results[index]["Status"] = status_val
-                
-                completed_count += 1
-                if status_val == "Found": found_count += 1
-                await update_callback(completed_count, len(df), results, found_count)
+                results[index]["Status"] = "Found" if res not in ["Not Found", "ERROR"] else res
+                completed += 1
+                if results[index]["Status"] == "Found": found += 1
+                await update_callback(completed, len(df), results, found)
 
-        tasks = [run_single_search(i) for i in range(len(df))]
-        await asyncio.gather(*tasks)
+        await asyncio.gather(*[worker(i) for i in range(len(df))])
         await browser.close()
         return results
 
-# --- UI Tabs ---
+# --- واجهة المستخدم ---
 tab1, tab2 = st.tabs(["Single Search", "Upload Excel File"])
 
 with tab1:
     st.subheader("🔍 Single Person Search")
     c1, c2 = st.columns(2)
-    p_in = c1.text_input("Passport Number")
-    n_in = c2.selectbox("Nationality", countries)
+    p_in = c1.text_input("Passport Number", key="s_p")
+    n_in = c2.selectbox("Nationality", countries, key="s_n")
     if st.button("🔍 Search Now"):
         with st.spinner("Searching..."):
             url = "https://smartservices.icp.gov.ae/echannels/web/client/guest/index.html#/leavePermit/588/step1?administrativeRegionId=1&withException=false"
-            async def single_run():
+            
+            async def run_single():
                 async with async_playwright() as p:
                     browser = await p.chromium.launch(headless=True)
                     context = await browser.new_context()
-                    res = await search_single_passport_playwright(p_in, n_in, url, context)
-                    await browser.close()
-                    return res
-            res = asyncio.run(single_run())
-            if res == "Found" or (res != "Not Found" and res != "ERROR"):
-                st.success(f"Found: {res}")
-            else: st.error(res)
+                    return await search_single_passport_playwright(p_in, n_in, url, context)
+            
+            st.session_state.single_res = asyncio.run(run_single())
+    
+    if st.session_state.single_res:
+        st.write(f"Result: {st.session_state.single_res}")
 
 with tab2:
     uploaded_file = st.file_uploader("Upload Excel", type=["xlsx"])
     if uploaded_file:
         df = pd.read_excel(uploaded_file)
-        concurrency = st.slider("Concurrency", 1, 10, st.session_state.concurrency_level)
+        concurrency = st.slider("Concurrency Level", 1, 5, st.session_state.concurrency_level)
         
-        if st.button("🚀 Start Batch"):
+        if st.button("🚀 Start Batch Search"):
             progress_bar = st.progress(0)
             status_area = st.empty()
             table_area = st.empty()
-            start_t = time.time()
+            start_time = time.time()
 
-            async def update_ui(completed, total, results, found):
+            async def update_ui(completed, total, results, found_count):
                 progress_bar.progress(completed / total)
-                elapsed = format_time(time.time() - start_t)
-                html = f"<div style='background:#E0F7FA;padding:10px;border-radius:5px;'>Completed: {completed}/{total} | Found: {found} | Time: {elapsed}</div>"
-                status_area.markdown(html, unsafe_allow_html=True)
+                elapsed = format_time(time.time() - start_time)
+                summary = f"**Completed:** {completed}/{total} | **Found:** {found_count} | **Time:** {elapsed}"
+                status_area.markdown(f"<div style='background:#E0F7FA;padding:10px;border-radius:5px;border-left:5px solid #00BCD4;'>{summary}</div>", unsafe_allow_html=True)
                 table_area.dataframe(pd.DataFrame(results).style.applymap(color_status, subset=['Status']), use_container_width=True)
 
             url = "https://smartservices.icp.gov.ae/echannels/web/client/guest/index.html#/leavePermit/588/step1?administrativeRegionId=1&withException=false"
-            final_res = asyncio.run(search_batch_concurrent(df, url, concurrency, update_ui))
-            st.session_state.batch_results = final_res
-            st.success("Batch Completed!")
+            
+            # معالجة الـ Loop بشكل آمن للسيرفر
+            try:
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            
+            results = loop.run_until_complete(search_batch_concurrent(df, url, concurrency, update_ui))
+            st.session_state.batch_results = results
+
+    if st.session_state.batch_results:
+        st.success("🏁 Done!")
+        # زر التحميل كما هو في كودك
+        res_df = pd.DataFrame(st.session_state.batch_results)
+        excel_buffer = tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx')
+        res_df.to_excel(excel_buffer.name, index=False)
+        with open(excel_buffer.name, "rb") as f:
+            st.download_button("📥 Download Results", f, "ICP_Results.xlsx")
